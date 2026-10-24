@@ -931,10 +931,9 @@ static int _hybris_hook_pthread_cond_destroy(pthread_cond_t *cond)
          * reset the reference count of the condition variable. */
 #ifdef __GLIBC__
         realcond->__data.__wrefs = 0;
-#else
-        realcond->_c_shared = 0;
-        realcond->_c_waiters = 0;
 #endif
+        /* musl waits for the waiters of a process-shared condition variable
+         * only, and this one is private. */
         ret = pthread_cond_destroy(realcond);
         free(realcond);
     }
@@ -1062,7 +1061,29 @@ static int _hybris_hook_pthread_cond_clockwait(pthread_cond_t *cond, pthread_mut
         *((uintptr_t *) mutex) = (uintptr_t) realmutex;
     }
 
+#ifdef __GLIBC__
     return pthread_cond_clockwait(realcond, realmutex, clock_id, abstime);
+#else
+    /* musl has no pthread_cond_clockwait: move the deadline from clock_id
+     * to the condition variable's clock (CLOCK_REALTIME by default) */
+    struct timespec now_c, now_r, abs_r;
+    if (clock_id != CLOCK_REALTIME && abstime) {
+        clock_gettime(clock_id, &now_c);
+        clock_gettime(CLOCK_REALTIME, &now_r);
+        abs_r.tv_sec = now_r.tv_sec + (abstime->tv_sec - now_c.tv_sec);
+        abs_r.tv_nsec = now_r.tv_nsec + (abstime->tv_nsec - now_c.tv_nsec);
+        while (abs_r.tv_nsec < 0) {
+            abs_r.tv_nsec += 1000000000;
+            abs_r.tv_sec--;
+        }
+        while (abs_r.tv_nsec >= 1000000000) {
+            abs_r.tv_nsec -= 1000000000;
+            abs_r.tv_sec++;
+        }
+        abstime = &abs_r;
+    }
+    return pthread_cond_timedwait(realcond, realmutex, abstime);
+#endif
 }
 
 static int _hybris_hook_pthread_cond_timedwait(pthread_cond_t *cond,
@@ -1607,7 +1628,11 @@ static int _hybris_hook_fgetpos(FILE *fp, bionic_fpos_t *pos)
 
     *pos = my_fpos.__pos;
 #else
-    int ret = fgetpos(_get_actual_fp(fp), pos);
+    off_t off = ftello(_get_actual_fp(fp));
+    int ret = off < 0 ? -1 : 0;
+
+    if (!ret)
+        *pos = off;
 #endif
 
     return ret;
@@ -1623,7 +1648,11 @@ static int _hybris_hook_fgetpos64(FILE *fp, bionic_fpos64_t *pos)
 
     *pos = my_fpos.__pos;
 #else
-    int ret = fgetpos(_get_actual_fp(fp), pos);
+    off_t off = ftello(_get_actual_fp(fp));
+    int ret = off < 0 ? -1 : 0;
+
+    if (!ret)
+        *pos = off;
 #endif
 
     return ret;
@@ -1739,7 +1768,7 @@ static int _hybris_hook_fsetpos(FILE *fp, const bionic_fpos_t *pos)
 
     return fsetpos(_get_actual_fp(fp), &my_fpos);
 #else
-    return fsetpos(_get_actual_fp(fp), pos);
+    return fseeko(_get_actual_fp(fp), *pos, SEEK_SET);
 #endif
 }
 
@@ -1754,7 +1783,7 @@ static int _hybris_hook_fsetpos64(FILE *fp, const bionic_fpos64_t *pos)
 
     return fsetpos64(_get_actual_fp(fp), &my_fpos);
 #else
-    return fsetpos(_get_actual_fp(fp), pos);
+    return fseeko(_get_actual_fp(fp), *pos, SEEK_SET);
 #endif
 }
 
@@ -2129,7 +2158,6 @@ static int _hybris_hook_versionsort(struct bionic_dirent **a,
     return strverscmp((*a)->d_name, (*b)->d_name);
 }
 
-#ifdef __GLIBC__
 static int _hybris_hook_scandirat(int fd, const char *dir,
                       struct bionic_dirent ***namelist,
                       int (*filter) (const struct bionic_dirent *),
@@ -2200,7 +2228,6 @@ static int _hybris_hook_scandir(const char *dir,
 {
     return _hybris_hook_scandirat(AT_FDCWD, dir, namelist, filter, compar);
 }
-#endif
 
 static inline void swap(void **a, void **b)
 {
@@ -2701,7 +2728,6 @@ static int _hybris_hook_munmap(void *addr, size_t length)
 
     return munmap(addr, length);
 }
-#endif
 
 extern size_t strlcat(char *dst, const char *src, size_t siz);
 extern size_t strlcpy(char *dst, const char *src, size_t siz);
@@ -3305,9 +3331,7 @@ static struct _hook hooks_common[] = {
     HOOK_DIRECT_NO_DEBUG(seekdir),
     HOOK_DIRECT_NO_DEBUG(telldir),
     HOOK_DIRECT_NO_DEBUG(dirfd),
-#ifdef __GLIBC__
     HOOK_INDIRECT(scandir),
-#endif
     HOOK_INDIRECT(alphasort),
     HOOK_INDIRECT(versionsort),
     /* fcntl.h */
@@ -3410,7 +3434,9 @@ static struct _hook hooks_mm[] = {
     HOOK_DIRECT_NO_DEBUG(wmemcpy),
     HOOK_DIRECT_NO_DEBUG(wmemmove),
     HOOK_DIRECT_NO_DEBUG(wmemset),
+#ifdef __GLIBC__
     HOOK_DIRECT_NO_DEBUG(wmempcpy),
+#endif
     HOOK_INDIRECT(fputws),
     // It's enough to hook vfwprintf here as fwprintf will call it with a
     // proper va_list in place so we don't have to handle this here.
@@ -3464,10 +3490,8 @@ static struct _hook hooks_mm[] = {
     /* dirent.h */
     HOOK_TO(readdir64, _hybris_hook_readdir),
     HOOK_TO(readdir64_r, _hybris_hook_readdir_r),
-#ifdef __GLIBC__
     HOOK_INDIRECT(scandir),
     HOOK_TO(scandir64, _hybris_hook_scandir),
-#endif
 };
 
 static struct _hook hooks_n[] = {
@@ -3480,9 +3504,7 @@ static struct _hook hooks_n[] = {
     HOOK_INDIRECT(freopen64),
     HOOK_INDIRECT(fileno_unlocked),
     /* dirent.h */
-#ifdef __GLIBC__
     HOOK_INDIRECT(scandirat),
-#endif
     HOOK_TO(scandirat64, _hybris_hook_scandirat),
 };
 
