@@ -486,9 +486,22 @@ EGLBoolean eglSwapBuffers(EGLDisplay dpy, EGLSurface surface)
 HYBRIS_IMPLEMENT_FUNCTION3(egl, EGLBoolean, eglCopyBuffers, EGLDisplay, EGLSurface, EGLNativePixmapType);
 
 
+/*
+ * Android's libEGL exports the extension functions we override; the
+ * vendor's EGL and GLES libraries (LIBEGL and LIBGLESV2 pointing at them)
+ * have them only through their eglGetProcAddress.
+ */
+#define HYBRIS_DLSYSM_EXT(name, fptr, sym) \
+	HYBRIS_DLSYSM(name, fptr, sym); \
+	if (*(fptr) == NULL) { \
+		HYBRIS_DLSYSM(egl, &_eglGetProcAddress, "eglGetProcAddress"); \
+		if (_eglGetProcAddress) \
+			*(fptr) = (void *) (*_eglGetProcAddress)(sym); \
+	}
+
 static EGLImageKHR _my_eglCreateImageKHR(EGLDisplay dpy, EGLContext ctx, EGLenum target, EGLClientBuffer buffer, const EGLint *attrib_list)
 {
-	HYBRIS_DLSYSM(egl, &_eglCreateImageKHR, "eglCreateImageKHR");
+	HYBRIS_DLSYSM_EXT(egl, &_eglCreateImageKHR, "eglCreateImageKHR");
 	struct _EGLDisplay *display = hybris_egl_display_get_mapping(dpy);
 	EGLContext newctx = ctx;
 	EGLenum newtarget = target;
@@ -515,21 +528,21 @@ static EGLImageKHR _my_eglCreateImageKHR(EGLDisplay dpy, EGLContext ctx, EGLenum
 
 static void _my_glEGLImageTargetTexture2DOES(GLenum target, GLeglImageOES image)
 {
-	HYBRIS_DLSYSM(glesv2, &_glEGLImageTargetTexture2DOES, "glEGLImageTargetTexture2DOES");
+	HYBRIS_DLSYSM_EXT(glesv2, &_glEGLImageTargetTexture2DOES, "glEGLImageTargetTexture2DOES");
 	struct egl_image *img = image;
 	(*_glEGLImageTargetTexture2DOES)(target, img ? img->egl_image : NULL);
 }
 
 static void _my_glEGLImageTargetRenderbufferStorageOES(GLenum target, GLeglImageOES image)
 {
-	HYBRIS_DLSYSM(glesv2, &_glEGLImageTargetRenderbufferStorageOES, "glEGLImageTargetRenderbufferStorageOES");
+	HYBRIS_DLSYSM_EXT(glesv2, &_glEGLImageTargetRenderbufferStorageOES, "glEGLImageTargetRenderbufferStorageOES");
 	struct egl_image *img = image;
 	(*_glEGLImageTargetRenderbufferStorageOES)(target, img ? img->egl_image : NULL);
 }
 
 EGLBoolean _my_eglDestroyImageKHR(EGLDisplay dpy, EGLImageKHR image)
 {
-	HYBRIS_DLSYSM(egl, &_eglDestroyImageKHR, "eglDestroyImageKHR");
+	HYBRIS_DLSYSM_EXT(egl, &_eglDestroyImageKHR, "eglDestroyImageKHR");
 	struct egl_image *img = image;
 	EGLBoolean ret = (*_eglDestroyImageKHR)(dpy, img ? img->egl_image : NULL);
 	if (ret == EGL_TRUE) {
