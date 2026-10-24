@@ -445,6 +445,22 @@ static int _hybris_hook_pthread_kill(pthread_t thread, int sig)
     return pthread_kill(thread, sig);
 }
 
+static int _hybris_hook_pthread_key_create(pthread_key_t *key, void (*destructor)(void *))
+{
+    TRACE_HOOK("key %p destructor %p", key, destructor);
+
+    int ret = pthread_key_create(key, destructor);
+
+    /* Bionic never hands out key 0, so the getspecific hook below takes 0
+     * for a key used before its creation. musl (and glibc) start at 0: if
+     * Android code gets it (no key created before, e.g. the IMG EGL loaded
+     * without Android's libEGL), keep 0 unused and give it the next one. */
+    if (ret == 0 && *key == 0)
+        ret = pthread_key_create(key, destructor);
+
+    return ret;
+}
+
 static int _hybris_hook_pthread_setspecific(pthread_key_t key, const void *ptr)
 {
     TRACE_HOOK("key %d ptr %" PRIdPTR, key, (intptr_t) ptr);
@@ -3186,7 +3202,7 @@ static struct _hook hooks_common[] = {
     HOOK_DIRECT_NO_DEBUG(pthread_getname_np),
     HOOK_INDIRECT(pthread_setname_np),
     HOOK_DIRECT_NO_DEBUG(pthread_once),
-    HOOK_DIRECT_NO_DEBUG(pthread_key_create),
+    HOOK_INDIRECT(pthread_key_create),
     HOOK_DIRECT(pthread_setspecific),
     HOOK_INDIRECT(pthread_getspecific),
     HOOK_INDIRECT(pthread_attr_init),
