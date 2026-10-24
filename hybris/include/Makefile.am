@@ -83,6 +83,10 @@ mediainclude_HEADERS = \
 	hybris/media/media_buffer_layer.h \
 	hybris/media/media_meta_data_layer.h
 
+grallocincludedir = $(includedir)/hybris/gralloc
+grallocinclude_HEADERS = \
+	hybris/gralloc/gralloc.h
+
 dlfcnincludedir = $(includedir)/hybris/dlfcn
 dlfcninclude_HEADERS = \
 	hybris/dlfcn/dlfcn.h
