@@ -15,6 +15,9 @@
  *
  */
 
+/* system/audio.h and cutils/bitops.h use strdup() and ffs() */
+#define _GNU_SOURCE
+
 #include <android-config.h>
 #include <memory.h>
 #include <assert.h>

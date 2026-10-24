@@ -46,6 +46,11 @@
 #include <dlfcn.h>
 #include "logging.h"
 
+#if ANDROID_VERSION_MAJOR < 8
+/* in libhybris-common; cutils/native_handle.h declares it from Android 8 on */
+native_handle_t *native_handle_clone(const native_handle_t *handle);
+#endif
+
 static int version = -1;
 static hw_module_t *gralloc_hardware_module = NULL;
 
