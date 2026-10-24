@@ -29,6 +29,10 @@
 extern void *(*_create_wrapper)(const char *symbol, void *function, int wrapper_type);
 #endif
 
+#ifndef PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP
+#define PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP {{PTHREAD_MUTEX_RECURSIVE}}
+#endif
+
 /* This file hijacks the symbols stubbed out in libdl.so. */
 
 #define DL_SUCCESS                    0

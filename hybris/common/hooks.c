@@ -569,6 +569,7 @@ static int _hybris_hook_pthread_attr_getstacksize(pthread_attr_t const *__attr, 
     return pthread_attr_getstacksize(realattr, stack_size);
 }
 
+#ifdef __GLIBC__
 static int _hybris_hook_pthread_attr_setstackaddr(pthread_attr_t *__attr, void *stack_addr)
 {
     pthread_attr_t *realattr = (pthread_attr_t *) *(uintptr_t *) __attr;
@@ -586,6 +587,7 @@ static int _hybris_hook_pthread_attr_getstackaddr(pthread_attr_t const *__attr, 
 
     return pthread_attr_getstackaddr(realattr, stack_addr);
 }
+#endif
 
 static int _hybris_hook_pthread_attr_setstack(pthread_attr_t *__attr, void *stack_base, size_t stack_size)
 {
@@ -1220,6 +1222,7 @@ static int _hybris_hook_pthread_rwlockattr_getpshared(pthread_rwlockattr_t *__at
     return pthread_rwlockattr_getpshared(realattr, pshared);
 }
 
+#ifdef __GLIBC__
 int _hybris_hook_pthread_rwlockattr_setkind_np(pthread_rwlockattr_t *attr, int pref)
 {
     pthread_rwlockattr_t *realattr = (pthread_rwlockattr_t *) *(uintptr_t *) attr;
@@ -1237,6 +1240,7 @@ int _hybris_hook_pthread_rwlockattr_getkind_np(const pthread_rwlockattr_t *attr,
 
     return pthread_rwlockattr_getkind_np(realattr, pref);
 }
+#endif
 
 /*
  * pthread_rwlock_* functions
@@ -2125,6 +2129,7 @@ static int _hybris_hook_versionsort(struct bionic_dirent **a,
     return strverscmp((*a)->d_name, (*b)->d_name);
 }
 
+#ifdef __GLIBC__
 static int _hybris_hook_scandirat(int fd, const char *dir,
                       struct bionic_dirent ***namelist,
                       int (*filter) (const struct bionic_dirent *),
@@ -2195,6 +2200,7 @@ static int _hybris_hook_scandir(const char *dir,
 {
     return _hybris_hook_scandirat(AT_FDCWD, dir, namelist, filter, compar);
 }
+#endif
 
 static inline void swap(void **a, void **b)
 {
@@ -2454,6 +2460,7 @@ int _hybris_hook_open(const char *pathname, int flags, ...)
     return open(target_path, flags, mode);
 }
 
+#ifdef __GLIBC__
 /**
  * Wrap some GCC builtin functions, which don't have any address
  */
@@ -2479,6 +2486,7 @@ __THROW int _hybris_hook___snprintf_chk (char *__restrict __s, size_t __n, int _
 
     return ret;
 }
+#endif
 
 static __thread void *tls_hooks[16];
 
@@ -2693,6 +2701,7 @@ static int _hybris_hook_munmap(void *addr, size_t length)
 
     return munmap(addr, length);
 }
+#endif
 
 extern size_t strlcat(char *dst, const char *src, size_t siz);
 extern size_t strlcpy(char *dst, const char *src, size_t siz);
@@ -3044,7 +3053,9 @@ static struct _hook hooks_common[] = {
     HOOK_DIRECT_NO_DEBUG(realloc),
     HOOK_DIRECT_NO_DEBUG(memalign),
     HOOK_DIRECT_NO_DEBUG(valloc),
+#ifdef __GLIBC__
     HOOK_DIRECT_NO_DEBUG(pvalloc),
+#endif
     HOOK_DIRECT(fread),
     HOOK_DIRECT_NO_DEBUG(getxattr),
     HOOK_DIRECT(mprotect),
@@ -3096,8 +3107,10 @@ static struct _hook hooks_common[] = {
     HOOK_DIRECT_NO_DEBUG(bcopy),
     HOOK_DIRECT_NO_DEBUG(bzero),
     HOOK_DIRECT_NO_DEBUG(ffs),
+#ifdef __GLIBC__
     HOOK_INDIRECT(__sprintf_chk),
     HOOK_INDIRECT(__snprintf_chk),
+#endif
     /* pthread.h */
     HOOK_DIRECT_NO_DEBUG(getauxval),
     HOOK_INDIRECT(gettid),
@@ -3160,8 +3173,10 @@ static struct _hook hooks_common[] = {
     HOOK_INDIRECT(pthread_attr_getschedparam),
     HOOK_INDIRECT(pthread_attr_setstacksize),
     HOOK_INDIRECT(pthread_attr_getstacksize),
+#ifdef __GLIBC__
     HOOK_INDIRECT(pthread_attr_setstackaddr),
     HOOK_INDIRECT(pthread_attr_getstackaddr),
+#endif
     HOOK_INDIRECT(pthread_attr_setstack),
     HOOK_INDIRECT(pthread_attr_getstack),
     HOOK_INDIRECT(pthread_attr_setguardsize),
@@ -3290,7 +3305,9 @@ static struct _hook hooks_common[] = {
     HOOK_DIRECT_NO_DEBUG(seekdir),
     HOOK_DIRECT_NO_DEBUG(telldir),
     HOOK_DIRECT_NO_DEBUG(dirfd),
+#ifdef __GLIBC__
     HOOK_INDIRECT(scandir),
+#endif
     HOOK_INDIRECT(alphasort),
     HOOK_INDIRECT(versionsort),
     /* fcntl.h */
@@ -3313,7 +3330,9 @@ static struct _hook hooks_common[] = {
     HOOK_DIRECT_NO_DEBUG(localtime_r),
     HOOK_DIRECT_NO_DEBUG(gmtime),
     HOOK_DIRECT_NO_DEBUG(abort),
+#ifdef __GLIBC__
     HOOK_DIRECT_NO_DEBUG(writev),
+#endif
     /* unistd.h */
     HOOK_DIRECT_NO_DEBUG(access),
     /* grp.h */
@@ -3345,13 +3364,17 @@ static struct _hook hooks_mm[] = {
     HOOK_DIRECT(putenv),
     HOOK_DIRECT(clearenv),
     HOOK_DIRECT_NO_DEBUG(dprintf),
+#ifdef __GLIBC__
     HOOK_DIRECT_NO_DEBUG(mallinfo),
+#endif
     HOOK_DIRECT(malloc_usable_size),
     HOOK_DIRECT(posix_memalign),
     HOOK_DIRECT(mprotect),
     HOOK_TO(__gnu_strerror_r, _hybris_hook__gnu_strerror_r),
+#ifdef __GLIBC__
     HOOK_INDIRECT(pthread_rwlockattr_getkind_np),
     HOOK_INDIRECT(pthread_rwlockattr_setkind_np),
+#endif
     /* unistd.h */
     HOOK_DIRECT(fork),
     HOOK_DIRECT_NO_DEBUG(ttyname),
@@ -3441,8 +3464,10 @@ static struct _hook hooks_mm[] = {
     /* dirent.h */
     HOOK_TO(readdir64, _hybris_hook_readdir),
     HOOK_TO(readdir64_r, _hybris_hook_readdir_r),
+#ifdef __GLIBC__
     HOOK_INDIRECT(scandir),
     HOOK_TO(scandir64, _hybris_hook_scandir),
+#endif
 };
 
 static struct _hook hooks_n[] = {
@@ -3455,7 +3480,9 @@ static struct _hook hooks_n[] = {
     HOOK_INDIRECT(freopen64),
     HOOK_INDIRECT(fileno_unlocked),
     /* dirent.h */
+#ifdef __GLIBC__
     HOOK_INDIRECT(scandirat),
+#endif
     HOOK_TO(scandirat64, _hybris_hook_scandirat),
 };
 
