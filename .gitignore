@@ -85,3 +85,8 @@ hybris/tests/test_vibrator
 hybris/tests/test_vulkan
 hybris/tests/test_wifi
 
+
+# Installed by autoreconf --install (automake's GNU defaults) and autoconf's backup
+hybris/COPYING
+hybris/INSTALL
+configure~
