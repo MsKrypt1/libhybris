@@ -528,6 +528,17 @@ HYBRIS_IMPLEMENT_FUNCTION3(egl, EGLBoolean, eglCopyBuffers, EGLDisplay, EGLSurfa
 			*(fptr) = (void *) (*_eglGetProcAddress)(sym); \
 	}
 
+/* The native buffer libhybris made for an imported dma-buf (eglplatformcommon) */
+static void release_dmabuf_buffer(EGLClientBuffer buffer)
+{
+	static EGLBoolean (*release)(EGLClientBuffer);
+
+	if (release == NULL)
+		release = (EGLBoolean (*)(EGLClientBuffer)) ws_eglGetProcAddress("eglHybrisReleaseNativeBuffer");
+	if (release != NULL && buffer != NULL)
+		(*release)(buffer);
+}
+
 static EGLImageKHR _my_eglCreateImageKHR(EGLDisplay dpy, EGLContext ctx, EGLenum target, EGLClientBuffer buffer, const EGLint *attrib_list)
 {
 	HYBRIS_DLSYSM_EXT(egl, &_eglCreateImageKHR, "eglCreateImageKHR");
@@ -542,6 +553,8 @@ static EGLImageKHR _my_eglCreateImageKHR(EGLDisplay dpy, EGLContext ctx, EGLenum
 	EGLImageKHR eik = (*_eglCreateImageKHR)(dpy, newctx, newtarget, newbuffer, newattrib_list);
 
 	if (eik == EGL_NO_IMAGE_KHR) {
+		if (target == EGL_LINUX_DMA_BUF_EXT && newtarget != target)
+			release_dmabuf_buffer(newbuffer);
 		return EGL_NO_IMAGE_KHR;
 	}
 
@@ -575,6 +588,8 @@ EGLBoolean _my_eglDestroyImageKHR(EGLDisplay dpy, EGLImageKHR image)
 	struct egl_image *img = image;
 	EGLBoolean ret = (*_eglDestroyImageKHR)(dpy, img ? img->egl_image : NULL);
 	if (ret == EGL_TRUE) {
+		if (img->target == EGL_LINUX_DMA_BUF_EXT)
+			release_dmabuf_buffer(img->ws_buffer);
 		free(img);
 		return EGL_TRUE;
 	}

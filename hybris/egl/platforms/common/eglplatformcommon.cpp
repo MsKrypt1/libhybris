@@ -234,9 +234,143 @@ extern "C" EGLBoolean eglplatformcommon_eglHybrisReleaseNativeBuffer(EGLClientBu
 
 
 
+/*
+ * EGL_EXT_image_dma_buf_import for the PowerVR SGX's gralloc. The dma-buf (one plane at offset 0,
+ * linear, with the pitch IMG's gralloc gives the width: its own buffers, hybris_gbm.so's) is
+ * imported as a gralloc buffer, with a handle in IMG's layout (hal_public.h, IMG_native_handle_t:
+ * 1 fd, 13 ints): the allocation's own in the process that allocated it, else rebuilt. IMG's
+ * gralloc maps a rebuilt one by the fd; the stamp only keys its per-process table of mappings, so
+ * the dma-buf's inode stands in for it: unique per buffer, the same for each import of one.
+ */
+#define IMG_DMABUF_USAGE (GRALLOC_USAGE_HW_TEXTURE | GRALLOC_USAGE_HW_RENDER | \
+	GRALLOC_USAGE_SW_READ_OFTEN | GRALLOC_USAGE_SW_WRITE_OFTEN)
+#define IMG_DMABUF_FLAGS 0x10001003	/* what IMG's gralloc sets for that usage */
+#define HYBRIS_FOURCC(a, b, c, d) \
+	((EGLint)(a) | ((EGLint)(b) << 8) | ((EGLint)(c) << 16) | ((EGLint)(d) << 24))
+
+static const struct { EGLint fourcc; int hal_format; } dmabuf_formats[] = {
+	{ HYBRIS_FOURCC('X', 'R', '2', '4'), 0x1FF },	/* IMG's BGRX_8888 */
+	{ HYBRIS_FOURCC('A', 'R', '2', '4'), HAL_PIXEL_FORMAT_BGRA_8888 },
+	{ HYBRIS_FOURCC('X', 'B', '2', '4'), HAL_PIXEL_FORMAT_RGBX_8888 },
+	{ HYBRIS_FOURCC('A', 'B', '2', '4'), HAL_PIXEL_FORMAT_RGBA_8888 },
+};
+#define N_DMABUF_FORMATS (sizeof(dmabuf_formats) / sizeof(dmabuf_formats[0]))
+
+static int dmabuf_hal_format(EGLint fourcc)
+{
+	for (unsigned int i = 0; i < N_DMABUF_FORMATS; i++)
+		if (dmabuf_formats[i].fourcc == fourcc)
+			return dmabuf_formats[i].hal_format;
+	return 0;
+}
+
+static EGLClientBuffer import_dmabuf(const EGLint *attrib_list)
+{
+	int fd = -1, width = 0, height = 0, offset = 0, pitch = 0, hal = 0;
+	EGLint mod_lo = 0, mod_hi = 0;
+
+	for (const EGLint *a = attrib_list; a && a[0] != EGL_NONE; a += 2) {
+		switch (a[0]) {
+		case EGL_WIDTH: width = a[1]; break;
+		case EGL_HEIGHT: height = a[1]; break;
+		case EGL_LINUX_DRM_FOURCC_EXT: hal = dmabuf_hal_format(a[1]); break;
+		case EGL_DMA_BUF_PLANE0_FD_EXT: fd = a[1]; break;
+		case EGL_DMA_BUF_PLANE0_OFFSET_EXT: offset = a[1]; break;
+		case EGL_DMA_BUF_PLANE0_PITCH_EXT: pitch = a[1]; break;
+		case EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT: mod_lo = a[1]; break;
+		case EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT: mod_hi = a[1]; break;
+		case EGL_IMAGE_PRESERVED_KHR: break;
+		default: return NULL;	/* more planes, YUV hints */
+		}
+	}
+	/* DRM_FORMAT_MOD_LINEAR is 0, DRM_FORMAT_MOD_INVALID means "implicit": linear here too */
+	bool linear = (mod_lo == 0 && mod_hi == 0) || (mod_lo == -1 && mod_hi == 0x00ffffff);
+	struct stat st;
+	off_t size;
+	if (fd < 0 || !hal || width <= 0 || height <= 0 || offset || pitch < width * 4 || pitch % 4 ||
+			!linear || fstat(fd, &st) || (size = lseek(fd, 0, SEEK_END)) <= 0)
+		return NULL;
+
+	/*
+	 * The process that allocated the buffer (a GBM bo from hybris_gbm) has to use the allocation's
+	 * handle: IMG's gralloc maps a rebuilt one with another stamp to other memory there. Other
+	 * processes get it rebuilt from the fd, any stamp works (the kernel finds the buffer by the fd).
+	 */
+	native_handle_t *h = native_handle_create(1, 13);
+	int num_fds, usage = IMG_DMABUF_USAGE;
+	h->data[0] = fd;
+	if (hybris_gralloc_allocated_ints(fd, &num_fds, &h->data[1], 13) == 13 && num_fds == 1) {
+		usage = h->data[5];
+	} else {
+		unsigned long long stamp = (1ULL << 63) | st.st_ino;
+		h->data[1] = h->data[2] = -1;			/* fd[1], fd[2]: no more planes */
+		memcpy(&h->data[3], &stamp, sizeof(stamp));	/* ui64Stamp */
+		h->data[5] = usage;
+		h->data[6] = width;
+		h->data[7] = height;
+		h->data[8] = hal;
+		h->data[9] = 32;				/* uiBpp */
+		h->data[10] = size;				/* uiAllocSize[0..2] */
+		h->data[11] = h->data[12] = 0;
+		h->data[13] = IMG_DMABUF_FLAGS;
+	}
+
+	const native_handle_t *out = NULL;
+	int ret = hybris_gralloc_import_buffer(h, &out);	/* a clone: the fd stays the caller's */
+	native_handle_delete(h);
+	if (ret)
+		return NULL;
+	RemoteWindowBuffer *buf = new RemoteWindowBuffer(width, height, pitch / 4, hal,
+		usage, (buffer_handle_t)out);
+	buf->common.incRef(&buf->common);
+	return (EGLClientBuffer) static_cast<ANativeWindowBuffer *>(buf);
+}
+
+extern "C" EGLBoolean eglplatformcommon_eglQueryDmaBufFormatsEXT(EGLDisplay dpy, EGLint max_formats,
+		EGLint *formats, EGLint *num_formats)
+{
+	EGLint n = N_DMABUF_FORMATS;
+
+	if (max_formats > 0 && formats) {
+		if (n > max_formats)
+			n = max_formats;
+		for (EGLint i = 0; i < n; i++)
+			formats[i] = dmabuf_formats[i].fourcc;
+	}
+	*num_formats = n;
+	return EGL_TRUE;
+}
+
+extern "C" EGLBoolean eglplatformcommon_eglQueryDmaBufModifiersEXT(EGLDisplay dpy, EGLint format,
+		EGLint max_modifiers, EGLuint64KHR *modifiers, EGLBoolean *external_only,
+		EGLint *num_modifiers)
+{
+	if (!dmabuf_hal_format(format))
+		return EGL_FALSE;
+	if (max_modifiers > 0 && modifiers) {
+		modifiers[0] = 0;	/* DRM_FORMAT_MOD_LINEAR */
+		if (external_only)
+			external_only[0] = EGL_FALSE;
+	}
+	*num_modifiers = 1;
+	return EGL_TRUE;
+}
+
 extern "C" void
 eglplatformcommon_passthroughImageKHR(EGLContext *ctx, EGLenum *target, EGLClientBuffer *buffer, const EGLint **attrib_list)
 {
+	if (*target == EGL_LINUX_DMA_BUF_EXT)
+	{
+		EGLClientBuffer buf = import_dmabuf(*attrib_list);
+		if (buf)
+		{
+			*buffer = buf;	/* released with the image (egl.c) */
+			*target = EGL_NATIVE_BUFFER_ANDROID;
+			*ctx = EGL_NO_CONTEXT;
+			*attrib_list = NULL;
+		}
+		return;
+	}
 #ifdef WANT_WAYLAND
 	static int debugenvchecked = 0;
 	if (*target == EGL_WAYLAND_BUFFER_WL)
@@ -327,21 +461,32 @@ extern "C" __eglMustCastToProperFunctionPointerType eglplatformcommon_eglGetProc
 	{
 		return (__eglMustCastToProperFunctionPointerType)eglplatformcommon_eglHybrisNativeBufferHandle;
 	}
+	else
+	if (strcmp(procname, "eglQueryDmaBufFormatsEXT") == 0)
+	{
+		return (__eglMustCastToProperFunctionPointerType)eglplatformcommon_eglQueryDmaBufFormatsEXT;
+	}
+	else
+	if (strcmp(procname, "eglQueryDmaBufModifiersEXT") == 0)
+	{
+		return (__eglMustCastToProperFunctionPointerType)eglplatformcommon_eglQueryDmaBufModifiersEXT;
+	}
 	return NULL;
 }
 
 extern "C" const char *eglplatformcommon_eglQueryString(EGLDisplay dpy, EGLint name, const char *(*real_eglQueryString)(EGLDisplay dpy, EGLint name))
 {
 	const char *ret = (*real_eglQueryString)(dpy, name);
-#ifdef WANT_WAYLAND
 	if (ret && name == EGL_EXTENSIONS)
 	{
 		static char eglextensionsbuf[2048];
 		snprintf(eglextensionsbuf, 2046, "%s %s", ret,
-			"EGL_HYBRIS_native_buffer2 EGL_HYBRIS_WL_acquire_native_buffer EGL_WL_bind_wayland_display"
+			"EGL_EXT_image_dma_buf_import EGL_EXT_image_dma_buf_import_modifiers"
+#ifdef WANT_WAYLAND
+			" EGL_HYBRIS_native_buffer2 EGL_HYBRIS_WL_acquire_native_buffer EGL_WL_bind_wayland_display"
+#endif
 		);
 		ret = eglextensionsbuf;
 	}
-#endif
 	return ret;
 }

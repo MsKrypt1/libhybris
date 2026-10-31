@@ -38,6 +38,9 @@
 #endif
 
 #include <errno.h>
+#include <pthread.h>
+#include <string.h>
+#include <sys/stat.h>
 #include <stdio.h>
 #include <unistd.h>
 #include <stdlib.h>
@@ -242,9 +245,82 @@ static void gralloc1_init(void)
 }
 #endif
 
+/*
+ * Buffers allocated in this process, by their first fd's file (a dma-buf's inode): a gralloc
+ * that tells its buffers apart by a stamp in the handle (IMG's) maps a handle rebuilt from the
+ * fd with another stamp to other memory in the process that allocated it, so imports of a dma-buf
+ * fd (EGL_EXT_image_dma_buf_import) take the allocation's ints from here.
+ */
+struct allocation {
+    struct allocation *next;
+    dev_t dev;
+    ino_t ino;
+    buffer_handle_t handle;
+};
+static struct allocation *allocations;
+static pthread_mutex_t allocations_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static void allocation_add(buffer_handle_t handle)
+{
+    struct allocation *a;
+    struct stat st;
+
+    if (handle->numFds < 1 || fstat(handle->data[0], &st) || !(a = malloc(sizeof(*a))))
+        return;
+    a->dev = st.st_dev;
+    a->ino = st.st_ino;
+    a->handle = handle;
+    pthread_mutex_lock(&allocations_lock);
+    a->next = allocations;
+    allocations = a;
+    pthread_mutex_unlock(&allocations_lock);
+}
+
+static void allocation_remove(buffer_handle_t handle)
+{
+    struct allocation **p, *a;
+
+    pthread_mutex_lock(&allocations_lock);
+    for (p = &allocations; (a = *p); p = &a->next) {
+        if (a->handle == handle) {
+            *p = a->next;
+            free(a);
+            break;
+        }
+    }
+    pthread_mutex_unlock(&allocations_lock);
+}
+
+int hybris_gralloc_allocated_ints(int fd, int *num_fds, int *ints, int max_ints)
+{
+    struct allocation *a;
+    struct stat st;
+    int n = 0;
+
+    if (fstat(fd, &st))
+        return 0;
+    pthread_mutex_lock(&allocations_lock);
+    for (a = allocations; a; a = a->next) {
+        if (a->dev == st.st_dev && a->ino == st.st_ino) {
+            n = a->handle->numInts;
+            if (n <= max_ints) {
+                *num_fds = a->handle->numFds;
+                memcpy(ints, &a->handle->data[a->handle->numFds], n * sizeof(int));
+            } else
+                n = 0;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&allocations_lock);
+    return n;
+}
+
 int hybris_gralloc_release(buffer_handle_t handle, int was_allocated)
 {
     int ret = -ENOSYS;
+
+    if (was_allocated)
+        allocation_remove(handle);
 
     if GRALLOC_COMPAT(
         if (was_allocated) {
@@ -344,6 +420,8 @@ int hybris_gralloc_allocate(int width, int height, int format, int usage, buffer
                                     handle_ptr, (int*)stride_ptr);
     ) else NO_GRALLOC
 
+    if (ret == 0)
+        allocation_add(*handle_ptr);
     return ret;
 }
 

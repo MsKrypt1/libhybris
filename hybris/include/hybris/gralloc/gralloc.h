@@ -34,6 +34,8 @@ int hybris_gralloc_release(buffer_handle_t handle, int was_allocated);
 int hybris_gralloc_import_buffer(buffer_handle_t raw_handle, buffer_handle_t* out_handle);
 int hybris_gralloc_retain(buffer_handle_t handle);
 int hybris_gralloc_allocate(int width, int height, int format, int usage, buffer_handle_t *handle, uint32_t *stride);
+/* The ints of the handle this process allocated for the buffer behind fd (same file), 0 if none */
+int hybris_gralloc_allocated_ints(int fd, int *num_fds, int *ints, int max_ints);
 int hybris_gralloc_lock(buffer_handle_t handle, int usage, int l, int t, int w, int h, void **vaddr);
 int hybris_gralloc_unlock(buffer_handle_t handle);
 int hybris_gralloc_fbdev_format(void);
