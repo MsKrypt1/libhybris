@@ -45,6 +45,8 @@ void sync_file_info_free(struct sync_file_info* info);
 #include <sync/sync.h>
 #endif
 
+#include <errno.h>
+#include <poll.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -136,13 +138,11 @@ void sync_fence_info_free(struct sync_fence_info_data* info);
 
 extern size_t strlcpy(char *dst, const char *src, size_t siz);
 
+/* poll() for every version: it works on the legacy (staging) fences as well, and mainline's
+ * sync_file has no SYNC_IOC_WAIT (removed with the de-stage in 4.7), so with the Android 7
+ * headers that ioctl failed at once with ENOTTY and nothing waited. */
 int sync_wait(int fd, int timeout)
 {
-#if (ANDROID_VERSION_MAJOR <= 7)
-    __s32 to = timeout;
-
-    return ioctl(fd, SYNC_IOC_WAIT, &to);
-#else
     struct pollfd fds;
     int ret;
     if (fd < 0) {
@@ -165,7 +165,6 @@ int sync_wait(int fd, int timeout)
         }
     } while (ret == -1 && (errno == EINTR || errno == EAGAIN));
     return ret;
-#endif
 }
 
 #if (ANDROID_VERSION_MAJOR <= 7)
