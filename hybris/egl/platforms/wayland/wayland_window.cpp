@@ -234,6 +234,20 @@ void WaylandNativeWindow::finishSwap()
     unlock();
 }
 
+/* EGL_EXT_buffer_age, for a surface whose EGL_SWAP_BEHAVIOR is EGL_BUFFER_PRESERVED (the
+ * PowerVR SGX EGL's default): each frame starts with the last one's contents, whichever buffer it
+ * gets, so 1 once a frame of the window's size was presented, else 0. */
+int WaylandNativeWindow::bufferAge()
+{
+    int age;
+
+    lock();
+    age = m_window && m_window->attached_width == m_width &&
+          m_window->attached_height == m_height ? 1 : 0;
+    unlock();
+    return age;
+}
+
 static int debugenvchecked = 0;
 
 int WaylandNativeWindow::queueBuffer(BaseNativeWindowBuffer* buffer, int fenceFd)

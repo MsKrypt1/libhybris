@@ -249,7 +249,7 @@ extern "C" const char *waylandws_eglQueryString(EGLDisplay dpy, EGLint name, con
 	{
 		static char eglextensionsbuf[2048];
 		snprintf(eglextensionsbuf, 2046, "%s %s", ret,
-			"EGL_EXT_swap_buffers_with_damage EGL_WL_create_wayland_buffer_from_image"
+			"EGL_EXT_swap_buffers_with_damage EGL_WL_create_wayland_buffer_from_image EGL_EXT_buffer_age"
 		);
 		ret = eglextensionsbuf;
 	}
@@ -266,6 +266,12 @@ extern "C" void waylandws_finishSwap(EGLDisplay dpy, EGLNativeWindowType win)
 {
 	WaylandNativeWindow *window = static_cast<WaylandNativeWindow *>((struct ANativeWindow *)win);
 	window->finishSwap();
+}
+
+extern "C" int waylandws_bufferAge(EGLDisplay dpy, EGLNativeWindowType win)
+{
+	WaylandNativeWindow *window = static_cast<WaylandNativeWindow *>((struct ANativeWindow *)win);
+	return window->bufferAge();
 }
 
 extern "C" void waylandws_setSwapInterval(EGLDisplay dpy, EGLNativeWindowType win, EGLint interval)
@@ -288,6 +294,7 @@ struct ws_module ws_module_info = {
 	waylandws_setSwapInterval,
 	waylandws_releaseDisplay,
 	waylandws_eglInitialized,
+	waylandws_bufferAge,
 };
 
 

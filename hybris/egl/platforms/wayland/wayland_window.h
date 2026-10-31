@@ -56,6 +56,7 @@ public:
     virtual int setSwapInterval(int interval);
     void prepareSwap(EGLint *damage_rects, EGLint damage_n_rects);
     void finishSwap();
+    int bufferAge();
 
     static void sync_callback(void *data, struct wl_callback *callback, uint32_t serial);
     static void registry_handle_global(void *data, struct wl_registry *registry, uint32_t name,

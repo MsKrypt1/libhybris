@@ -425,7 +425,27 @@ EGLBoolean eglDestroySurface(EGLDisplay dpy, EGLSurface surface)
 	return result;
 }
 
-HYBRIS_IMPLEMENT_FUNCTION4(egl, EGLBoolean, eglQuerySurface, EGLDisplay, EGLSurface, EGLint, EGLint *);
+static EGLBoolean (*_eglQuerySurface)(EGLDisplay, EGLSurface, EGLint, EGLint *) = NULL;
+
+/* EGL_EXT_buffer_age is the platform's, which knows the window's frames: for a preserved surface
+ * (the PowerVR EGL's default), 1 once a frame was presented; otherwise 0, contents undefined. */
+EGLBoolean eglQuerySurface(EGLDisplay dpy, EGLSurface surface, EGLint attribute, EGLint *value)
+{
+	HYBRIS_DLSYSM(egl, &_eglQuerySurface, "eglQuerySurface");
+	if (attribute == EGL_BUFFER_AGE_EXT && egl_helper_has_mapping(surface)) {
+		int age = ws_bufferAge(dpy, egl_helper_get_mapping(surface));
+		EGLint behaviour = EGL_BUFFER_DESTROYED;
+
+		if (age >= 0) {
+			if (!(*_eglQuerySurface)(dpy, surface, EGL_SWAP_BEHAVIOR, &behaviour))
+				return EGL_FALSE;
+			*value = behaviour == EGL_BUFFER_PRESERVED ? age : 0;
+			return EGL_TRUE;
+		}
+	}
+	return (*_eglQuerySurface)(dpy, surface, attribute, value);
+}
+
 HYBRIS_IMPLEMENT_FUNCTION1(egl, EGLBoolean, eglBindAPI, EGLenum);
 HYBRIS_IMPLEMENT_FUNCTION0(egl, EGLenum, eglQueryAPI);
 HYBRIS_IMPLEMENT_FUNCTION0(egl, EGLBoolean, eglWaitClient);

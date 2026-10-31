@@ -202,4 +202,13 @@ void ws_setSwapInterval(EGLDisplay dpy, EGLNativeWindowType win, EGLint interval
 		ws->setSwapInterval(dpy, win, interval);
 }
 
+/* EGL_BUFFER_AGE_EXT of a window surface, -1 if the platform doesn't track it */
+int ws_bufferAge(EGLDisplay dpy, EGLNativeWindowType win)
+{
+	assert(ws != NULL);
+	if (ws->bufferAge)
+		return ws->bufferAge(dpy, win);
+	return -1;
+}
+
 // vim:ts=4:sw=4:noexpandtab
