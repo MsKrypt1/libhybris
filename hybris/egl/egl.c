@@ -335,7 +335,29 @@ const char * eglQueryString(EGLDisplay dpy, EGLint name)
 }
 
 HYBRIS_IMPLEMENT_FUNCTION4(egl, EGLBoolean, eglGetConfigs, EGLDisplay, EGLConfig *, EGLint, EGLint *);
-HYBRIS_IMPLEMENT_FUNCTION5(egl, EGLBoolean, eglChooseConfig, EGLDisplay, const EGLint *, EGLConfig *, EGLint, EGLint *);
+static EGLBoolean (*_eglChooseConfig)(EGLDisplay, const EGLint *, EGLConfig *, EGLint, EGLint *) = NULL;
+
+/* The spec's default EGL_RENDERABLE_TYPE is EGL_OPENGL_ES_BIT. Mesa's configs do all APIs, so
+ * callers that mean GLES2 leave it out (GDK3's Wayland GL); the IMG driver has separate GLES1 and
+ * GLES2 configs. Nothing here uses GLES1: without a renderable type, ask for GLES2. */
+EGLBoolean eglChooseConfig(EGLDisplay dpy, const EGLint *attrib_list, EGLConfig *configs,
+		EGLint config_size, EGLint *num_config)
+{
+	EGLint attrs[128];
+	int n = 0;
+
+	HYBRIS_DLSYSM(egl, &_eglChooseConfig, "eglChooseConfig");
+	if (attrib_list) {
+		for (; attrib_list[n] != EGL_NONE; n += 2)
+			if (attrib_list[n] == EGL_RENDERABLE_TYPE || n + 4 >= 128)
+				return (*_eglChooseConfig)(dpy, attrib_list, configs, config_size, num_config);
+		memcpy(attrs, attrib_list, n * sizeof(EGLint));
+	}
+	attrs[n++] = EGL_RENDERABLE_TYPE;
+	attrs[n++] = EGL_OPENGL_ES2_BIT;
+	attrs[n] = EGL_NONE;
+	return (*_eglChooseConfig)(dpy, attrs, configs, config_size, num_config);
+}
 HYBRIS_IMPLEMENT_FUNCTION4(egl, EGLBoolean, eglGetConfigAttrib, EGLDisplay, EGLConfig, EGLint, EGLint *);
 
 EGLSurface eglCreateWindowSurface(EGLDisplay dpy, EGLConfig config,
