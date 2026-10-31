@@ -2500,7 +2500,19 @@ int _hybris_hook_open(const char *pathname, int flags, ...)
             va_end(ap);
     }
 
-    return open(target_path, flags, mode);
+    int fd = open(target_path, flags, mode);
+
+    /* In a sandbox that binds /dev/dri but not the rest of /dev (WebKit's web process), the
+     * GPU's nodes can be made reachable as /dev/dri/NAME. */
+    if (fd < 0 && errno == ENOENT && target_path == pathname &&
+            (strcmp(pathname, "/dev/pvrsrvkm") == 0 || strcmp(pathname, "/dev/pvr_sync") == 0)) {
+            char dri[32];
+            snprintf(dri, sizeof(dri), "/dev/dri/%s", pathname + 5);
+            fd = open(dri, flags, mode);
+            if (fd < 0)
+                    errno = ENOENT;
+    }
+    return fd;
 }
 
 #ifdef __GLIBC__
