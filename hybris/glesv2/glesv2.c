@@ -25,6 +25,7 @@
 #include <dlfcn.h>
 #include <stddef.h>
 #include <stdlib.h>
+#include <stdint.h>
 
 #include <hybris/common/binding.h>
 
@@ -125,7 +126,35 @@ HYBRIS_IMPLEMENT_VOID_FUNCTION1(glesv2, glLineWidth, GLfloat);
 HYBRIS_IMPLEMENT_VOID_FUNCTION1(glesv2, glLinkProgram, GLuint);
 HYBRIS_IMPLEMENT_VOID_FUNCTION2(glesv2, glPixelStorei, GLenum, GLint);
 HYBRIS_IMPLEMENT_VOID_FUNCTION2(glesv2, glPolygonOffset, GLfloat, GLfloat);
-HYBRIS_IMPLEMENT_VOID_FUNCTION7(glesv2, glReadPixels, GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, void *);
+static void (*_glReadPixels)(GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, void *) = NULL;
+
+/* GLES2 reads RGBA, plus the implementation's format for the framebuffer. The SGX's
+ * GL_IMG_read_format reads BGRA from BGRA framebuffers only; from an RGBA8 one (WebKit's shared
+ * memory render target) a BGRA read is GL_INVALID_OPERATION: read RGBA and swap red and blue. */
+void glReadPixels(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type,
+		void *pixels)
+{
+	GLint f = 0, align = 4;
+
+	HYBRIS_DLSYSM(glesv2, &_glReadPixels, "glReadPixels");
+	if (format == GL_BGRA_EXT && type == GL_UNSIGNED_BYTE && pixels) {
+		glGetIntegerv(GL_IMPLEMENTATION_COLOR_READ_FORMAT, &f);
+		if (f != GL_BGRA_EXT) {
+			(*_glReadPixels)(x, y, width, height, GL_RGBA, type, pixels);
+			glGetIntegerv(GL_PACK_ALIGNMENT, &align);
+			size_t stride = ((size_t)width * 4 + align - 1) / align * align;
+			for (GLsizei r = 0; r < height; r++) {
+				uint32_t *p = (uint32_t *)((char *)pixels + r * stride);
+				for (GLsizei i = 0; i < width; i++) {
+					uint32_t v = p[i];
+					p[i] = (v & 0xff00ff00) | (v & 0xff) << 16 | (v >> 16 & 0xff);
+				}
+			}
+			return;
+		}
+	}
+	(*_glReadPixels)(x, y, width, height, format, type, pixels);
+}
 HYBRIS_IMPLEMENT_VOID_FUNCTION0(glesv2, glReleaseShaderCompiler);
 HYBRIS_IMPLEMENT_VOID_FUNCTION4(glesv2, glRenderbufferStorage, GLenum, GLenum, GLsizei, GLsizei);
 HYBRIS_IMPLEMENT_VOID_FUNCTION2(glesv2, glSampleCoverage, GLfloat, GLboolean);
