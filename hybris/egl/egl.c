@@ -230,8 +230,12 @@ EGLDisplay __eglHybrisGetPlatformDisplayCommon(EGLenum platform,
 			break;
 
 		case EGL_PLATFORM_ANDROID_KHR:
+		case EGL_PLATFORM_SURFACELESS_MESA:
+		case EGL_PLATFORM_GBM_KHR:
 			// "null" ws passthrough everything, which essentially means
 			// the Android platform. Not to be confused with NULL (0) value.
+			// Surfaceless and GBM: pbuffers and FBOs only (GBM buffers as
+			// dma-buf EGLImages), which the null ws has.
 			hybris_ws = "null";
 			break;
 
@@ -312,17 +316,20 @@ const char * eglQueryString(EGLDisplay dpy, EGLint name)
 {
 	HYBRIS_DLSYSM(egl, &_eglQueryString, "eglQueryString");
 
-#ifdef WANT_WAYLAND
 	if (dpy == EGL_NO_DISPLAY && name == EGL_EXTENSIONS) {
+		// EGL 1.4 drivers have no client extensions (NULL, EGL_BAD_DISPLAY):
+		// list the platforms eglGetPlatformDisplay() takes
 		const char *ret = _eglQueryString(dpy, name);
 		static char eglextensionsbuf[2048];
-		snprintf(eglextensionsbuf, 2046, "%s %s", ret,
-			"EGL_EXT_client_extensions EGL_EXT_platform_wayland EGL_KHR_platform_wayland"
-		);
-		ret = eglextensionsbuf;
-		return ret;
-	}
+		snprintf(eglextensionsbuf, 2046, "%s%s%s", ret ? ret : "", ret ? " " : "",
+			"EGL_EXT_client_extensions EGL_EXT_platform_base EGL_MESA_platform_surfaceless"
+			" EGL_KHR_platform_gbm EGL_MESA_platform_gbm"
+#ifdef WANT_WAYLAND
+			" EGL_EXT_platform_wayland EGL_KHR_platform_wayland"
 #endif
+		);
+		return eglextensionsbuf;
+	}
 
 	return ws_eglQueryString(dpy, name, _eglQueryString);
 }
