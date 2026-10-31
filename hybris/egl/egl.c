@@ -680,6 +680,22 @@ __eglMustCastToProperFunctionPointerType eglGetProcAddress(const char *procname)
 		ret = ws_eglGetProcAddress(procname);
 	}
 
+	/*
+	 * The core EGL functions too, as with EGL_KHR_get_all_proc_addresses:
+	 * Chromium (QtWebEngine) resolves every EGL function through
+	 * eglGetProcAddress, and an EGL 1.4 driver returns only extensions.
+	 * Our own exports, so the core functions keep their wrappers.
+	 */
+	if (ret == NULL && strncmp(procname, "egl", 3) == 0) {
+		static void *self;
+		Dl_info info;
+
+		if (self == NULL && dladdr((void *) eglGetProcAddress, &info))
+			self = dlopen(info.dli_fname, RTLD_LAZY | RTLD_NOLOAD);
+		if (self != NULL)
+			ret = (__eglMustCastToProperFunctionPointerType) dlsym(self, procname);
+	}
+
 	if (ret == NULL && _eglGetProcAddress != NULL) {
 		ret = (*_eglGetProcAddress)(procname);
 	}
