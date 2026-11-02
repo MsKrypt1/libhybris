@@ -241,6 +241,13 @@ extern "C" EGLBoolean eglplatformcommon_eglHybrisReleaseNativeBuffer(EGLClientBu
  * 1 fd, 13 ints): the allocation's own in the process that allocated it, else rebuilt. IMG's
  * gralloc maps a rebuilt one by the fd; the stamp only keys its per-process table of mappings, so
  * the dma-buf's inode stands in for it: unique per buffer, the same for each import of one.
+ *
+ * NV12 (a V4L2 decoder's frames) goes in as IMG's TI_NV12, which the SGX samples as an external
+ * texture (BT.601). IMG's gralloc maps it from two fds (TilerMapNV12: luma, chroma), each with its
+ * size, as one range: the first uiAllocSize[0] bytes of fd[0], then the first uiAllocSize[1] of
+ * fd[1]. The GPU takes the chroma plane at pitch * height from the start, so it has to be there:
+ * in the same dma-buf (passed as both fds: the range is then that buffer's start) or at the start
+ * of its own, after a luma plane of whole pages.
  */
 #define IMG_DMABUF_USAGE (GRALLOC_USAGE_HW_TEXTURE | GRALLOC_USAGE_HW_RENDER | \
 	GRALLOC_USAGE_SW_READ_OFTEN | GRALLOC_USAGE_SW_WRITE_OFTEN)
@@ -255,6 +262,12 @@ static const struct { EGLint fourcc; int hal_format; } dmabuf_formats[] = {
 	{ HYBRIS_FOURCC('A', 'B', '2', '4'), HAL_PIXEL_FORMAT_RGBA_8888 },
 };
 #define N_DMABUF_FORMATS (sizeof(dmabuf_formats) / sizeof(dmabuf_formats[0]))
+#define DMABUF_NV12 HYBRIS_FOURCC('N', 'V', '1', '2')
+#ifndef HAL_PIXEL_FORMAT_TI_NV12
+#define HAL_PIXEL_FORMAT_TI_NV12 0x100	/* IMG's hal_public.h */
+#endif
+#define IMG_NV12_USAGE (GRALLOC_USAGE_HW_TEXTURE | GRALLOC_USAGE_SW_READ_OFTEN)
+#define IMG_PAGE 4096UL
 
 static int dmabuf_hal_format(EGLint fourcc)
 {
@@ -264,32 +277,119 @@ static int dmabuf_hal_format(EGLint fourcc)
 	return 0;
 }
 
+/* DRM_FORMAT_MOD_LINEAR is 0, DRM_FORMAT_MOD_INVALID means "implicit": linear here too */
+static bool dmabuf_linear(EGLint lo, EGLint hi)
+{
+	return (lo == 0 && hi == 0) || (lo == -1 && hi == 0x00ffffff);
+}
+
+/* the NV12 frame's handle (TI_NV12, two fds), or NULL if the SGX can't sample its layout */
+static native_handle_t *nv12_handle(int width, int height, const int fd[2], const int offset[2],
+		const int pitch[2])
+{
+	struct stat st[2];
+	off_t size[2];
+	unsigned long luma = (unsigned long)pitch[0] * height, alloc[2];
+
+	if (width <= 0 || height <= 0 || width % 2 || height % 2 || pitch[0] < width ||
+			pitch[1] != pitch[0] || offset[0] || fd[0] < 0 || fd[1] < 0)
+		return NULL;
+	for (int i = 0; i < 2; i++)
+		if (fstat(fd[i], &st[i]) || (size[i] = lseek(fd[i], 0, SEEK_END)) <= 0 ||
+				size[i] % IMG_PAGE)
+			return NULL;
+	if (st[0].st_ino == st[1].st_ino && st[0].st_dev == st[1].st_dev) {
+		/* one buffer: the range is its start, as far as the chroma plane's end */
+		unsigned long end = (luma + luma / 2 + IMG_PAGE - 1) & ~(IMG_PAGE - 1);
+		if ((unsigned long)offset[1] != luma || end > (unsigned long)size[0])
+			return NULL;
+		alloc[0] = luma & ~(IMG_PAGE - 1);
+		alloc[1] = end - alloc[0];
+	} else {
+		if (offset[1] || luma % IMG_PAGE || luma > (unsigned long)size[0] ||
+				luma / 2 > (unsigned long)size[1])
+			return NULL;
+		alloc[0] = luma;
+		alloc[1] = size[1];
+	}
+
+	native_handle_t *h = native_handle_create(2, 12);
+	unsigned long long stamp = (1ULL << 63) | st[0].st_ino;
+	h->data[0] = fd[0];
+	h->data[1] = fd[1];
+	h->data[2] = -1;				/* fd[2] */
+	memcpy(&h->data[3], &stamp, sizeof(stamp));	/* ui64Stamp */
+	h->data[5] = IMG_NV12_USAGE;
+	h->data[6] = width;
+	h->data[7] = height;
+	h->data[8] = HAL_PIXEL_FORMAT_TI_NV12;
+	h->data[9] = 12;				/* uiBpp */
+	h->data[10] = alloc[0];				/* uiAllocSize[0..2] */
+	h->data[11] = alloc[1];
+	h->data[12] = 0;
+	h->data[13] = IMG_DMABUF_FLAGS;
+	return h;
+}
+
 static EGLClientBuffer import_dmabuf(const EGLint *attrib_list)
 {
-	int fd = -1, width = 0, height = 0, offset = 0, pitch = 0, hal = 0;
-	EGLint mod_lo = 0, mod_hi = 0;
+	int fd[2] = { -1, -1 }, offset[2] = { 0, 0 }, pitch[2] = { 0, 0 };
+	int width = 0, height = 0, hal = 0;
+	EGLint fourcc = 0, mod_lo[2] = { 0, 0 }, mod_hi[2] = { 0, 0 };
+	bool yuv_hints = false;
 
 	for (const EGLint *a = attrib_list; a && a[0] != EGL_NONE; a += 2) {
 		switch (a[0]) {
 		case EGL_WIDTH: width = a[1]; break;
 		case EGL_HEIGHT: height = a[1]; break;
-		case EGL_LINUX_DRM_FOURCC_EXT: hal = dmabuf_hal_format(a[1]); break;
-		case EGL_DMA_BUF_PLANE0_FD_EXT: fd = a[1]; break;
-		case EGL_DMA_BUF_PLANE0_OFFSET_EXT: offset = a[1]; break;
-		case EGL_DMA_BUF_PLANE0_PITCH_EXT: pitch = a[1]; break;
-		case EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT: mod_lo = a[1]; break;
-		case EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT: mod_hi = a[1]; break;
+		case EGL_LINUX_DRM_FOURCC_EXT: fourcc = a[1]; break;
+		case EGL_DMA_BUF_PLANE0_FD_EXT: fd[0] = a[1]; break;
+		case EGL_DMA_BUF_PLANE0_OFFSET_EXT: offset[0] = a[1]; break;
+		case EGL_DMA_BUF_PLANE0_PITCH_EXT: pitch[0] = a[1]; break;
+		case EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT: mod_lo[0] = a[1]; break;
+		case EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT: mod_hi[0] = a[1]; break;
+		case EGL_DMA_BUF_PLANE1_FD_EXT: fd[1] = a[1]; break;
+		case EGL_DMA_BUF_PLANE1_OFFSET_EXT: offset[1] = a[1]; break;
+		case EGL_DMA_BUF_PLANE1_PITCH_EXT: pitch[1] = a[1]; break;
+		case EGL_DMA_BUF_PLANE1_MODIFIER_LO_EXT: mod_lo[1] = a[1]; break;
+		case EGL_DMA_BUF_PLANE1_MODIFIER_HI_EXT: mod_hi[1] = a[1]; break;
 		case EGL_IMAGE_PRESERVED_KHR: break;
-		default: return NULL;	/* more planes, YUV hints */
+		/* the SGX's YUV conversion is its own (BT.601, limited range): hints accepted */
+		case EGL_YUV_COLOR_SPACE_HINT_EXT:
+		case EGL_SAMPLE_RANGE_HINT_EXT:
+		case EGL_YUV_CHROMA_HORIZONTAL_SITING_HINT_EXT:
+		case EGL_YUV_CHROMA_VERTICAL_SITING_HINT_EXT: yuv_hints = true; break;
+		default: return NULL;	/* a third plane */
 		}
 	}
-	/* DRM_FORMAT_MOD_LINEAR is 0, DRM_FORMAT_MOD_INVALID means "implicit": linear here too */
-	bool linear = (mod_lo == 0 && mod_hi == 0) || (mod_lo == -1 && mod_hi == 0x00ffffff);
+	if (!dmabuf_linear(mod_lo[0], mod_hi[0]) || (yuv_hints && fourcc != DMABUF_NV12))
+		return NULL;
+
+	if (fourcc == DMABUF_NV12) {
+		if (!dmabuf_linear(mod_lo[1], mod_hi[1]))
+			return NULL;
+		native_handle_t *h = nv12_handle(width, height, fd, offset, pitch);
+		if (!h)
+			return NULL;
+		const native_handle_t *out = NULL;
+		int ret = hybris_gralloc_import_buffer(h, &out);	/* a clone: the fds stay the caller's */
+		native_handle_delete(h);
+		if (ret)
+			return NULL;
+		RemoteWindowBuffer *buf = new RemoteWindowBuffer(width, height, pitch[0],
+			HAL_PIXEL_FORMAT_TI_NV12, IMG_NV12_USAGE, (buffer_handle_t)out);
+		buf->common.incRef(&buf->common);
+		return (EGLClientBuffer) static_cast<ANativeWindowBuffer *>(buf);
+	}
+
+	hal = dmabuf_hal_format(fourcc);
 	struct stat st;
 	off_t size;
-	if (fd < 0 || !hal || width <= 0 || height <= 0 || offset || pitch < width * 4 || pitch % 4 ||
-			!linear || fstat(fd, &st) || (size = lseek(fd, 0, SEEK_END)) <= 0)
+	if (fd[0] < 0 || fd[1] >= 0 || !hal || width <= 0 || height <= 0 || offset[0] ||
+			pitch[0] < width * 4 || pitch[0] % 4 || fstat(fd[0], &st) ||
+			(size = lseek(fd[0], 0, SEEK_END)) <= 0)
 		return NULL;
+	int pitch0 = pitch[0];
 
 	/*
 	 * The process that allocated the buffer (a GBM bo from hybris_gbm) has to use the allocation's
@@ -298,8 +398,8 @@ static EGLClientBuffer import_dmabuf(const EGLint *attrib_list)
 	 */
 	native_handle_t *h = native_handle_create(1, 13);
 	int num_fds, usage = IMG_DMABUF_USAGE;
-	h->data[0] = fd;
-	if (hybris_gralloc_allocated_ints(fd, &num_fds, &h->data[1], 13) == 13 && num_fds == 1) {
+	h->data[0] = fd[0];
+	if (hybris_gralloc_allocated_ints(fd[0], &num_fds, &h->data[1], 13) == 13 && num_fds == 1) {
 		usage = h->data[5];
 	} else {
 		unsigned long long stamp = (1ULL << 63) | st.st_ino;
@@ -320,7 +420,7 @@ static EGLClientBuffer import_dmabuf(const EGLint *attrib_list)
 	native_handle_delete(h);
 	if (ret)
 		return NULL;
-	RemoteWindowBuffer *buf = new RemoteWindowBuffer(width, height, pitch / 4, hal,
+	RemoteWindowBuffer *buf = new RemoteWindowBuffer(width, height, pitch0 / 4, hal,
 		usage, (buffer_handle_t)out);
 	buf->common.incRef(&buf->common);
 	return (EGLClientBuffer) static_cast<ANativeWindowBuffer *>(buf);
@@ -329,13 +429,13 @@ static EGLClientBuffer import_dmabuf(const EGLint *attrib_list)
 extern "C" EGLBoolean eglplatformcommon_eglQueryDmaBufFormatsEXT(EGLDisplay dpy, EGLint max_formats,
 		EGLint *formats, EGLint *num_formats)
 {
-	EGLint n = N_DMABUF_FORMATS;
+	EGLint n = N_DMABUF_FORMATS + 1;	/* and NV12 */
 
 	if (max_formats > 0 && formats) {
 		if (n > max_formats)
 			n = max_formats;
 		for (EGLint i = 0; i < n; i++)
-			formats[i] = dmabuf_formats[i].fourcc;
+			formats[i] = i < (EGLint)N_DMABUF_FORMATS ? dmabuf_formats[i].fourcc : DMABUF_NV12;
 	}
 	*num_formats = n;
 	return EGL_TRUE;
@@ -345,12 +445,12 @@ extern "C" EGLBoolean eglplatformcommon_eglQueryDmaBufModifiersEXT(EGLDisplay dp
 		EGLint max_modifiers, EGLuint64KHR *modifiers, EGLBoolean *external_only,
 		EGLint *num_modifiers)
 {
-	if (!dmabuf_hal_format(format))
+	if (!dmabuf_hal_format(format) && format != DMABUF_NV12)
 		return EGL_FALSE;
 	if (max_modifiers > 0 && modifiers) {
 		modifiers[0] = 0;	/* DRM_FORMAT_MOD_LINEAR */
-		if (external_only)
-			external_only[0] = EGL_FALSE;
+		if (external_only)	/* YUV: sampled through GL_TEXTURE_EXTERNAL_OES only */
+			external_only[0] = format == DMABUF_NV12;
 	}
 	*num_modifiers = 1;
 	return EGL_TRUE;
